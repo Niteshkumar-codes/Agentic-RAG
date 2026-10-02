@@ -1,5 +1,24 @@
+# Environment & Secrets
 .env
+*.env
+!.env.example
+
+# Python Virtual Environments & Caches
 venv/
+.venv/
+backend/venv/
+backend/.venv/
 __pycache__/
 *.pyc
+
+# Node / Frontend Dependencies & Build Output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS & IDE Files
 .DS_Store
+.vscode/
+.idea/
+*.log
