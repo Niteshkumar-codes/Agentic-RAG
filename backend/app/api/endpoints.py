@@ -11,17 +11,32 @@ from app.schemas import (
     QueryResponse,
     SearchRequest,
     SearchResponse,
+    SearchResultItem,
+    SourceReferenceItem,
 )
 from app.services.document_parser import DocumentExtractionError, extract_text_from_file
 from app.services.text_chunker import ChunkingError, chunk_document
 from app.services.embedding_service import EmbeddingError, EmbeddingService
 from app.services.vector_store import VectorStoreError, VectorStoreService
+from app.services.retrieval_service import (
+    RetrievalError,
+    RetrievalService,
+    SearchResult,
+)
+from app.services.answer_generation_service import (
+    AnswerGenerationError,
+    AnswerGenerationService,
+    AnswerResult,
+    SourceReference,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["RAG Pipeline"])
 
 # Shared service instances
 _embedding_service: Optional[EmbeddingService] = None
 _vector_store_service: Optional[VectorStoreService] = None
+_retrieval_service: Optional[RetrievalService] = None
+_answer_generation_service: Optional[AnswerGenerationService] = None
 
 
 def get_embedding_service() -> EmbeddingService:
@@ -36,6 +51,23 @@ def get_vector_store_service() -> VectorStoreService:
     if _vector_store_service is None:
         _vector_store_service = VectorStoreService()
     return _vector_store_service
+
+
+def get_retrieval_service() -> RetrievalService:
+    global _retrieval_service
+    if _retrieval_service is None:
+        _retrieval_service = RetrievalService(
+            embedding_service=get_embedding_service(),
+            vector_store_service=get_vector_store_service(),
+        )
+    return _retrieval_service
+
+
+def get_answer_generation_service() -> AnswerGenerationService:
+    global _answer_generation_service
+    if _answer_generation_service is None:
+        _answer_generation_service = AnswerGenerationService()
+    return _answer_generation_service
 
 
 @router.post(
@@ -187,13 +219,47 @@ def ingest_document(
 def search_documents(request: SearchRequest) -> SearchResponse:
     """
     Executes semantic vector similarity search for a user query.
-
-    (Service integration stub for Phase 2.10 Step 2)
     """
+    retrieval_service = get_retrieval_service()
+
+    try:
+        results = retrieval_service.search(
+            query=request.query,
+            top_k=request.top_k,
+        )
+    except RetrievalError as e:
+        err_msg = str(e)
+        if (
+            "Model mismatch" in err_msg
+            or "Query cannot be empty" in err_msg
+            or "top_k must be" in err_msg
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid search parameters or embedding model mismatch.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Semantic vector search failed. Please try again later.",
+        )
+
+    mapped_results = [
+        SearchResultItem(
+            chunk_id=r.chunk_id,
+            text=r.text,
+            source_filename=r.source_filename,
+            page_number=r.page_number,
+            chunk_index=r.chunk_index,
+            model_name=r.model_name,
+            distance=r.distance,
+        )
+        for r in results
+    ]
+
     return SearchResponse(
         query=request.query,
-        results_count=0,
-        results=[],
+        results_count=len(mapped_results),
+        results=mapped_results,
     )
 
 
@@ -205,15 +271,67 @@ def search_documents(request: SearchRequest) -> SearchResponse:
 def query_rag(request: QueryRequest) -> QueryResponse:
     """
     Retrieves context and generates a grounded answer for a user question.
-
-    (Service integration stub for Phase 2.10 Step 2)
     """
+    retrieval_service = get_retrieval_service()
+    answer_gen_service = get_answer_generation_service()
+
+    # 1. Retrieve vector search context
+    try:
+        results = retrieval_service.search(
+            query=request.question,
+            top_k=request.top_k,
+        )
+    except RetrievalError as e:
+        err_msg = str(e)
+        if (
+            "Model mismatch" in err_msg
+            or "Query cannot be empty" in err_msg
+            or "top_k must be" in err_msg
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid search parameters or embedding model mismatch.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Context retrieval failed. Please try again later.",
+        )
+
+    # 2. Generate grounded answer
+    try:
+        answer_result = answer_gen_service.generate_answer(
+            question=request.question,
+            search_results=results,
+        )
+    except AnswerGenerationError as e:
+        err_msg = str(e)
+        if "Question cannot be empty" in err_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid question parameter.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Answer generation failed. Please try again later.",
+        )
+
+    # 3. Map SourceReference objects into SourceReferenceItem
+    mapped_sources = [
+        SourceReferenceItem(
+            source_label=s.source_label,
+            source_filename=s.source_filename,
+            page_number=s.page_number,
+            chunk_id=s.chunk_id,
+        )
+        for s in answer_result.sources
+    ]
+
     return QueryResponse(
         question=request.question,
-        answer="",
-        sources=[],
-        sufficient_context=False,
-        model_name="gemini-2.5-flash",
+        answer=answer_result.answer,
+        sources=mapped_sources,
+        sufficient_context=answer_result.sufficient_context,
+        model_name=answer_result.model_name,
     )
 
 
@@ -225,11 +343,19 @@ def query_rag(request: QueryRequest) -> QueryResponse:
 def get_collection_stats() -> CollectionStatsResponse:
     """
     Returns basic statistics about the vector store collection.
-
-    (Service integration stub for Phase 2.10 Step 2)
     """
+    vector_store_service = get_vector_store_service()
+
+    try:
+        info = vector_store_service.get_collection_info()
+    except VectorStoreError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve vector store collection statistics.",
+        )
+
     return CollectionStatsResponse(
-        collection_name="agentic_rag_collection",
-        persist_directory="chroma_db",
-        total_records=0,
+        collection_name=info.get("collection_name", vector_store_service.collection_name),
+        persist_directory=info.get("persist_directory", vector_store_service.persist_directory),
+        total_records=info.get("total_records", 0),
     )
