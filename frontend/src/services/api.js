@@ -5,26 +5,34 @@
 const BASE_URL = '' // Uses Vite dev proxy (or relative URL in production)
 
 async function handleResponse(response) {
+  let responseData = null
+  let rawText = ''
+  try {
+    rawText = await response.text()
+    if (rawText && rawText.trim()) {
+      responseData = JSON.parse(rawText)
+    }
+  } catch {
+    responseData = null
+  }
+
   if (!response.ok) {
     let detailMessage = `HTTP Error ${response.status}`
-    try {
-      const errorJson = await response.json()
-      if (errorJson && errorJson.detail) {
-        if (typeof errorJson.detail === 'string') {
-          detailMessage = errorJson.detail
-        } else if (Array.isArray(errorJson.detail)) {
-          // FastAPI Pydantic 422 validation errors
-          detailMessage = errorJson.detail
-            .map((err) => `${err.loc ? err.loc.join('.') : 'field'}: ${err.msg}`)
-            .join(' | ')
-        }
+    if (responseData && responseData.detail) {
+      if (typeof responseData.detail === 'string') {
+        detailMessage = responseData.detail
+      } else if (Array.isArray(responseData.detail)) {
+        // FastAPI Pydantic 422 validation errors
+        detailMessage = responseData.detail
+          .map((err) => `${err.loc ? err.loc.join('.') : 'field'}: ${err.msg}`)
+          .join(' | ')
       }
-    } catch {
-      // Non-JSON response body
+    } else if (rawText && rawText.trim()) {
+      detailMessage = rawText.trim()
     }
     throw new Error(detailMessage)
   }
-  return await response.json()
+  return responseData
 }
 
 /**

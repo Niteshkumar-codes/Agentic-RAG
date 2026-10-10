@@ -10,7 +10,6 @@ import {
 export default function App() {
   // Connection & System Stats State
   const [isBackendConnected, setIsBackendConnected] = useState(false)
-  const [healthInfo, setHealthInfo] = useState(null)
   const [stats, setStats] = useState({
     collection_name: 'agentic_rag_collection',
     persist_directory: 'chroma_db',
@@ -41,21 +40,21 @@ export default function App() {
   const [uiNotice, setUiNotice] = useState(null)
   const [isDragOver, setIsDragOver] = useState(false)
 
+  const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024 // 10 MB limit
+
   // Fetch initial health status and statistics on load
   const loadSystemStatus = async () => {
     try {
-      const healthData = await checkHealth()
+      await checkHealth()
       setIsBackendConnected(true)
-      setHealthInfo(healthData)
-    } catch (err) {
+    } catch {
       setIsBackendConnected(false)
-      setHealthInfo(null)
     }
 
     try {
       const statsData = await getStats()
       setStats(statsData)
-    } catch (err) {
+    } catch {
       // Keep default stats
     }
   }
@@ -64,20 +63,44 @@ export default function App() {
     loadSystemStatus()
   }, [])
 
+  const validateFile = (file) => {
+    if (!file) return false
+    const ext = file.name.split('.').pop().toLowerCase()
+    if (!['pdf', 'txt'].includes(ext)) {
+      setUiNotice({
+        type: 'error',
+        message: `Unsupported file format .${ext}. Only .pdf and .txt files are supported.`,
+      })
+      return false
+    }
+    if (file.size === 0) {
+      setUiNotice({
+        type: 'error',
+        message: `Selected file "${file.name}" is empty (0 bytes). Please select a valid document with content.`,
+      })
+      return false
+    }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setUiNotice({
+        type: 'error',
+        message: `Selected file "${file.name}" (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 10 MB size limit.`,
+      })
+      return false
+    }
+    return true
+  }
+
   // File Selection Handlers
   const handleFileChange = (e) => {
     const file = e.target.files?.[0]
     if (file) {
-      const ext = file.name.split('.').pop().toLowerCase()
-      if (['pdf', 'txt'].includes(ext)) {
+      if (validateFile(file)) {
         setSelectedFile(file)
         setIngestResponse(null)
         setUiNotice(null)
       } else {
-        setUiNotice({
-          type: 'error',
-          message: `Unsupported file format .${ext}. Only .pdf and .txt files are supported.`,
-        })
+        setSelectedFile(null)
+        e.target.value = ''
       }
     }
   }
@@ -87,16 +110,12 @@ export default function App() {
     setIsDragOver(false)
     const file = e.dataTransfer.files?.[0]
     if (file) {
-      const ext = file.name.split('.').pop().toLowerCase()
-      if (['pdf', 'txt'].includes(ext)) {
+      if (validateFile(file)) {
         setSelectedFile(file)
         setIngestResponse(null)
         setUiNotice(null)
       } else {
-        setUiNotice({
-          type: 'error',
-          message: `Unsupported file format .${ext}. Only .pdf and .txt files are supported.`,
-        })
+        setSelectedFile(null)
       }
     }
   }
@@ -119,6 +138,30 @@ export default function App() {
   const handleIngestSubmit = async (e) => {
     e.preventDefault()
     if (!selectedFile || isIngesting) return
+
+    if (!chunkSize || chunkSize <= 0) {
+      setUiNotice({
+        type: 'error',
+        message: 'Chunk size must be greater than 0.',
+      })
+      return
+    }
+
+    if (chunkOverlap < 0) {
+      setUiNotice({
+        type: 'error',
+        message: 'Chunk overlap cannot be negative.',
+      })
+      return
+    }
+
+    if (chunkOverlap >= chunkSize) {
+      setUiNotice({
+        type: 'error',
+        message: `Chunk overlap (${chunkOverlap}) must be strictly less than chunk size (${chunkSize}).`,
+      })
+      return
+    }
 
     setIsIngesting(true)
     setUiNotice(null)
@@ -156,6 +199,7 @@ export default function App() {
 
     setIsSearching(true)
     setSearchResults(null)
+    setUiNotice(null)
 
     try {
       const res = await searchDocuments(searchQuery, searchTopK)
@@ -177,6 +221,7 @@ export default function App() {
 
     setIsQuerying(true)
     setQueryResponse(null)
+    setUiNotice(null)
 
     try {
       const res = await queryRag(questionQuery, queryTopK)
@@ -232,8 +277,9 @@ export default function App() {
               onClick={loadSystemStatus}
               className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition-colors text-xs"
               title="Refresh connection status & stats"
+              aria-label="Refresh connection status and statistics"
             >
-              🔄
+              <span aria-hidden="true">🔄</span>
             </button>
           </div>
         </div>
@@ -244,6 +290,8 @@ export default function App() {
         {/* Banner Notice / Error Alert */}
         {uiNotice && (
           <div
+            role="alert"
+            aria-live="polite"
             className={`p-4 rounded-xl border flex items-center justify-between text-sm transition-all shadow-md ${
               uiNotice.type === 'success'
                 ? 'bg-emerald-950/80 border-emerald-800/80 text-emerald-200'
@@ -363,7 +411,7 @@ export default function App() {
                       <div className="text-sm font-medium text-slate-300">
                         <span className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2">Click to select</span> or drag & drop file
                       </div>
-                      <p className="text-xs text-slate-500">PDF or TXT document</p>
+                      <p className="text-xs text-slate-500">PDF or TXT document (up to 10 MB)</p>
                     </label>
                   ) : (
                     <div className="flex items-center justify-between bg-slate-900 border border-emerald-800/50 rounded-lg p-3">
