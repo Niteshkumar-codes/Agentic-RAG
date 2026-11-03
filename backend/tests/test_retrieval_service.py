@@ -116,6 +116,33 @@ class TestRetrievalService(unittest.TestCase):
             self.retrieval_service.search("test query", top_k=1)
         self.assertIn("Model mismatch error", str(ctx.exception))
 
+    def test_top_k_clamped_to_collection_size(self):
+        """top_k larger than the collection size must not raise an exception.
+
+        ChromaDB raises ValueError when n_results > collection.count().
+        RetrievalService guards against this on line 85:
+            n_results = min(top_k, total_records)
+
+        Scenario: store exactly 2 chunks, request top_k=10.
+        Expected: call succeeds and returns exactly 2 SearchResult objects.
+        """
+        self.vector_store.add_embedded_chunks([self.chunk_1, self.chunk_2])
+
+        # Sanity-check: collection really has only 2 records
+        info = self.vector_store.get_collection_info()
+        self.assertEqual(info["total_records"], 2)
+
+        # Request far more results than the collection holds
+        results = self.retrieval_service.search("machine learning", top_k=10)
+
+        # Must return all available chunks, not raise, not return 10 phantom results
+        self.assertEqual(len(results), 2)
+        for result in results:
+            self.assertIsInstance(result, SearchResult)
+            self.assertIsInstance(result.distance, float)
+            self.assertEqual(result.source_filename, "doc1.pdf")
+            self.assertEqual(result.model_name, "text-embedding-004")
+
 
 if __name__ == "__main__":
     unittest.main()
