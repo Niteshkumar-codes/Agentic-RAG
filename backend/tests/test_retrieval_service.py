@@ -143,6 +143,47 @@ class TestRetrievalService(unittest.TestCase):
             self.assertEqual(result.source_filename, "doc1.pdf")
             self.assertEqual(result.model_name, "text-embedding-004")
 
+    def test_results_ordered_by_ascending_distance(self):
+        """Results returned by search() must be ordered by ascending distance.
+
+        The service docstring guarantees "sorted by vector similarity distance".
+        Ordering is delegated to ChromaDB; this test verifies that contract is
+        preserved end-to-end through RetrievalService.
+
+        Setup:
+            - chunk_1 embedding [0.1, 0.2, 0.3, 0.4]  — identical to query vector
+            - chunk_2 embedding [0.9, 0.8, 0.7, 0.6]  — further from query vector
+            - mock embed_text always returns [0.1, 0.2, 0.3, 0.4]
+            Under L2 (ChromaDB default), chunk_1 has distance 0 and chunk_2 has
+            a strictly positive distance, guaranteeing a distinguishable ordering.
+
+        Assertion: results[0].distance <= results[1].distance (ordering only;
+        no exact float values assumed).
+        """
+        self.vector_store.add_embedded_chunks([self.chunk_1, self.chunk_2])
+
+        results = self.retrieval_service.search("machine learning", top_k=2)
+
+        self.assertEqual(len(results), 2, "Expected 2 results from a 2-chunk collection")
+
+        distances = [r.distance for r in results]
+
+        # Every distance must be a non-negative float
+        for dist in distances:
+            self.assertIsInstance(dist, float)
+            self.assertGreaterEqual(dist, 0.0)
+
+        # The list must be monotonically non-decreasing (ascending order)
+        self.assertLessEqual(
+            distances[0],
+            distances[1],
+            f"Results not in ascending distance order: {distances[0]} > {distances[1]}",
+        )
+
+        # The closest result must be chunk_1 (distance ≈ 0 since its vector
+        # matches the query vector exactly)
+        self.assertEqual(results[0].chunk_id, "doc1.pdf_p1_c1_aaa111")
+
 
 if __name__ == "__main__":
     unittest.main()
