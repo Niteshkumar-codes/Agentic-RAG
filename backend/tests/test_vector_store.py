@@ -113,6 +113,15 @@ class TestVectorStoreService(unittest.TestCase):
         self.assertEqual(res["added_count"], 0)
         self.assertEqual(res["status"], "no_op")
 
+    def test_get_chunk_by_id_nonexistent_returns_none(self):
+        """get_chunk_by_id() must return None when the requested ID is not in the collection."""
+        # Collection is empty at this point (nothing added in this test)
+        result = self.service.get_chunk_by_id("does_not_exist_id_xyz")
+        self.assertIsNone(
+            result,
+            "Expected None for a chunk ID that was never inserted into the collection.",
+        )
+
     def test_incompatible_vector_dimensions_in_batch(self):
         """Verify batch with mismatched vector dimensions raises error."""
         incompatible_chunk = EmbeddedChunk(
