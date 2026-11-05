@@ -100,6 +100,33 @@ class TestTextChunker(unittest.TestCase):
         chunks = chunk_document(empty_doc)
         self.assertEqual(chunks, [])
 
+    def test_whitespace_only_page_produces_no_chunks(self):
+        """A whitespace-only page must be skipped; surrounding valid pages must still chunk normally."""
+        doc = ExtractedDocument(
+            filename="mixed.pdf",
+            file_type="pdf",
+            total_pages=3,
+            pages=[
+                PageContent(page_number=1, text="First page has valid readable content."),
+                PageContent(page_number=2, text="   \t\n\r\n   "),  # whitespace only
+                PageContent(page_number=3, text="Third page also has valid readable content."),
+            ],
+            full_text="First page has valid readable content. Third page also has valid readable content.",
+        )
+        chunks = chunk_document(doc, chunk_size=500, chunk_overlap=50)
+
+        produced_pages = [c.page_number for c in chunks]
+
+        # Whitespace-only page 2 must contribute zero chunks
+        self.assertNotIn(2, produced_pages, "Page 2 (whitespace-only) should produce no chunks.")
+
+        # Valid pages must still produce at least one chunk each
+        self.assertIn(1, produced_pages, "Page 1 (valid text) must produce at least one chunk.")
+        self.assertIn(3, produced_pages, "Page 3 (valid text) must produce at least one chunk.")
+
+        # Verify total chunk count equals exactly the two valid pages (one chunk each, text < chunk_size)
+        self.assertEqual(len(chunks), 2)
+
     def test_chunking_invalid_settings(self):
         """Invalid chunk_size or chunk_overlap should raise ChunkingError."""
         # Invalid chunk_size <= 0
