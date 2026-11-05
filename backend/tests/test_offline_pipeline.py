@@ -194,5 +194,100 @@ class TestOfflineRAGPipeline(unittest.TestCase):
         self.assertIsInstance(top_match_p2.distance, float)
 
 
+    def test_cross_document_retrieval_returns_correct_source(self):
+        """
+        Ingests two separate PDFs with fully disjoint topic vocabularies
+        (astronomy vs. cooking) into a shared isolated collection, then verifies
+        that topic-specific queries retrieve chunks from the correct source document.
+
+        Uses the DeterministicOfflineEmbeddingService so no Gemini or network calls
+        are made. Assertions are limited to source identity (filename) — no brittle
+        score or ranking thresholds.
+
+        IMPORTANT — query design constraint: the deterministic embedder is a
+        bag-of-words MD5 hash with no stemming. Queries must therefore use exact
+        whitespace-tokenised words that appear in the document text to achieve
+        reliable cosine/L2 discrimination. Confirmed L2² margin >= 0.66 for both
+        directions by prior numerical probing.
+        """
+        # --- Build two PDFs with maximally disjoint vocabulary ---
+
+        # Document 1: astronomy
+        astro_filename = "astronomy_guide.pdf"
+        astro_path = self.tmp_path / astro_filename
+        astro_text = (
+            "Telescope observations reveal distant galaxies orbiting cosmic voids. "
+            "Photon flux measurements enable astronomers to calculate stellar luminosity. "
+            "Neutron stars and quasars emit intense radiation across spectral wavelengths."
+        )
+        doc_astro = pymupdf.open()
+        p = doc_astro.new_page()
+        p.insert_text((50, 50), astro_text)
+        doc_astro.save(str(astro_path))
+        doc_astro.close()
+
+        # Document 2: cooking
+        cook_filename = "cooking_guide.pdf"
+        cook_path = self.tmp_path / cook_filename
+        cook_text = (
+            "Sauteing vegetables in butter with garlic and thyme creates aromatic sauces. "
+            "Simmering broth reduces flavors for hearty stews and casseroles. "
+            "Whisking egg yolks into cream produces silky custard desserts."
+        )
+        doc_cook = pymupdf.open()
+        p = doc_cook.new_page()
+        p.insert_text((50, 50), cook_text)
+        doc_cook.save(str(cook_path))
+        doc_cook.close()
+
+        # --- Ingest Document 1 (astronomy) ---
+        extracted_astro = extract_text_from_file(astro_path)
+        self.assertEqual(extracted_astro.filename, astro_filename)
+        chunks_astro = chunk_document(extracted_astro, chunk_size=400, chunk_overlap=50)
+        self.assertGreater(len(chunks_astro), 0, "Astronomy doc must produce at least one chunk.")
+        embedded_astro = self.embedding_service.embed_chunks(chunks_astro)
+        self.vector_store_service.add_embedded_chunks(embedded_astro)
+
+        # --- Ingest Document 2 (cooking) ---
+        extracted_cook = extract_text_from_file(cook_path)
+        self.assertEqual(extracted_cook.filename, cook_filename)
+        chunks_cook = chunk_document(extracted_cook, chunk_size=400, chunk_overlap=50)
+        self.assertGreater(len(chunks_cook), 0, "Cooking doc must produce at least one chunk.")
+        embedded_cook = self.embedding_service.embed_chunks(chunks_cook)
+        self.vector_store_service.add_embedded_chunks(embedded_cook)
+
+        # Confirm both documents are stored
+        total = self.vector_store_service.get_collection_info()["total_records"]
+        self.assertEqual(total, len(embedded_astro) + len(embedded_cook))
+
+        # --- Query 1: astronomy topic → must surface astronomy document ---
+        # Exact tokens from astro_text; L2² to astro doc ≈ 0.81, to cook doc ≈ 1.56
+        results_astro = self.retrieval_service.search(
+            query="telescope galaxies photon stellar neutron luminosity", top_k=3
+        )
+        self.assertGreater(len(results_astro), 0)
+        top_astro = results_astro[0]
+        self.assertEqual(
+            top_astro.source_filename,
+            astro_filename,
+            f"Astronomy query top result should be from '{astro_filename}', "
+            f"got '{top_astro.source_filename}'.",
+        )
+
+        # --- Query 2: cooking topic → must surface cooking document ---
+        # Exact tokens from cook_text; L2² to cook doc ≈ 1.10, to astro doc ≈ 1.76
+        results_cook = self.retrieval_service.search(
+            query="sauteing butter garlic simmering custard broth", top_k=3
+        )
+        self.assertGreater(len(results_cook), 0)
+        top_cook = results_cook[0]
+        self.assertEqual(
+            top_cook.source_filename,
+            cook_filename,
+            f"Cooking query top result should be from '{cook_filename}', "
+            f"got '{top_cook.source_filename}'.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
