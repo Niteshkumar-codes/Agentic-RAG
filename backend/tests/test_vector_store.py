@@ -122,6 +122,21 @@ class TestVectorStoreService(unittest.TestCase):
             "Expected None for a chunk ID that was never inserted into the collection.",
         )
 
+    def test_empty_embedding_raises_error(self):
+        """add_embedded_chunks() must raise VectorStoreError when a chunk has an empty embedding."""
+        empty_embedding_chunk = EmbeddedChunk(
+            chunk_id="empty_emb_chunk_001",
+            text="Chunk with no embedding data.",
+            source_filename="test.pdf",
+            page_number=1,
+            chunk_index=1,
+            embedding=[],  # empty — triggers the guard on line 64 of vector_store.py
+            model_name="text-embedding-004",
+        )
+        with self.assertRaises(VectorStoreError) as ctx:
+            self.service.add_embedded_chunks([empty_embedding_chunk])
+        self.assertIn("has empty embedding vector", str(ctx.exception))
+
     def test_incompatible_vector_dimensions_in_batch(self):
         """Verify batch with mismatched vector dimensions raises error."""
         incompatible_chunk = EmbeddedChunk(
